@@ -6,6 +6,14 @@
 -- Tested only on Linux (as it uses command-line linux utilities to 
 -- scale up to 14 million+ images)
 -- Images on disk can have different height, width and number of channels.
+-- 
+-- prerequisite:
+-- install graphics magick by running the following command
+-- sudo apt-get install graphicsmagick
+-- link the missing so file if necessary:
+-- sudo ln -s /usr/lib/libGraphicsMagickWand.so.2.6.0 /usr/lib/libGraphicsMagickWand.so
+-- install lua packages:
+-- luarocks install graphicsmagick
 ------------------------------------------------------------------------
 local dl = require 'dataload._env'
 local ImagePatchSet, parent = torch.class('dl.ImagePatchSet', 'dl.DataLoader', dl)
@@ -239,6 +247,7 @@ function ImagePatchSet:index(indices, inputs, targets, samplefunc, samplenorm, s
    local samplenorm = samplenorm or false
    local sampleperimage = sampleperimage or 1
    
+   --print('index ', samplefunc, centerfirst)
    samplefunc = samplefunc or self.samplefunc
    if torch.type(samplefunc) == 'string' then
       samplefunc = self[samplefunc]
@@ -247,24 +256,23 @@ function ImagePatchSet:index(indices, inputs, targets, samplefunc, samplenorm, s
    local nsamples = indices:size(1) * sampleperimage
    inputs = inputs or torch.FloatTensor(nsamples, unpack(self.samplesize))
    targets = targets or torch.LongTensor(nsamples)
+   local dst
    for i = 1, indices:size(1) do
       local idx = indices[i]
       -- load the sample
       local imgpath = ffi.string(torch.data(self.imagePath[idx]))
       imagepaths[i] = imgpath
-      local dst = self:getImageBuffer(i)
-      if j==1 and centerfirst then
-         dst = samplefunc(self, dst, imgpath, centerfirst)
-      else
-         dst = samplefunc(self, dst, imgpath)
-      end
+      --dst = self:getImageBuffer(i)
+      dst = samplefunc(self, dst, imgpath, centerfirst)
       inputs[i]:copy(dst)
       targets[i] = self.imageClass[idx]
    end
+   --print(inputs[{{1,3},1,{},{}}])
    
    if samplenorm then
       self:normalizesamples(inputs)
    end
+   --print(inputs[{{1,3},1,{},{}}])
 
    self:collectgarbage()
    return inputs, targets, imagepaths
@@ -294,14 +302,15 @@ function ImagePatchSet:sample(batchsize, inputs, targets, samplefunc, samplenorm
       -- sample image from class
       local index = torch.random(1, self.classListSample[class]:nElement())
       local imgpath = ffi.string(torch.data(self.imagePath[self.classListSample[class][index]]))
+      --local input = self:getImageBuffer(idx)
+      local input = self:loadImage(imgpath)
       for j = 1,sampleperimage do 
          local idx = idx_shuffle[(i-1)*sampleperimage+(j-1)+1]
          imagepaths[idx] = imgpath
-         local dst = self:getImageBuffer(idx)
-         if j==1 and centerfirst then
-            dst = samplefunc(self, dst, imgpath, centerfirst)
+         if j==1 then
+            dst = samplefunc(self, input, imgpath, centerfirst)
          else
-            dst = samplefunc(self, dst, imgpath)
+            dst = samplefunc(self, input, imgpath)
          end
          inputs[idx]:copy(dst)
          targets[idx] = class
@@ -336,17 +345,26 @@ function ImagePatchSet:tableToTensor(inputTable, targetTable, inputTensor, targe
    return inputTensor, targetTensor
 end
 
-function ImagePatchSet:loadImage(path)
+function ImagePatchSet:loadImage(path, fixchannels)
+   local fixchannels = fixchannels or true
    -- load image with size hints
    --local gm = require 'graphicsmagick'
    --local input = gm.Image():load(path, self.loadsize[3], self.loadsize[2])
    local imgok, img = pcall(image.load, path)
-   -- resize by imposing the smallest dimension (while keeping aspect ratio)
-   --input:size(nil, math.min(lW,lH))
-   local input = image.rgb2yuv(img) 
-   -- use Y channel as grayscale
-   if self.samplesize[1] == 1 then
-      input = input[1]
+   --print('load ' .. path ..' '.. tostring(imgok), #img)
+   if not imgok then
+      print('failed to load ' .. path)
+      return nil
+   end
+
+   if img:size(1)==1 then
+      img = torch.repeatTensor(img,3,1,1)
+   end
+   -- convert to yuv space for color image
+   local input = image.rgb2yuv(img):float() 
+   -- use Y channel as grayscale if required
+   if self.samplesize[1]==1 and input:size(1)>1 then
+      input = input[{{1},{},{}}]
    end
    return input
 end
@@ -365,7 +383,14 @@ function ImagePatchSet:sampleDefault(dst, path, centeronly)
    local centeronly = centeronly or false
    dst = dst or torch.FloatTensor()
    
-   local input = self:loadImage(path)
+   local input = path
+   if type(input)=='string' then
+      input = self:loadImage(path)
+   end
+   -- check if image channels match
+   if self.samplesize[1]>1 and input:size(1)==1 then
+      return dst
+   end
    local iW, iH = input:size(3), input:size(2)
    local oW, oH = self.samplesize[3], self.samplesize[2]
    -- check if image size is valid
@@ -382,6 +407,7 @@ function ImagePatchSet:sampleDefault(dst, path, centeronly)
       h1 = math.ceil(torch.uniform(0, iH-oH))
       w1 = math.ceil(torch.uniform(0, iW-oW))
    end
+   --print(w1,h1,oW,oH,iW,iH)
    --local out = input:crop(oW, oH, w1, h1)
    local out = input:narrow(2,h1+1,oH):narrow(3,w1+1,oW)
    -- do hflip with probability 0.5
@@ -391,12 +417,12 @@ function ImagePatchSet:sampleDefault(dst, path, centeronly)
 end
 
 -- function to load the image, jitter it appropriately (random crops etc.)
-function ImagePatchSet:sampleTrain(dst, path)
-   return self:sampleDefault(dst, path)
+function ImagePatchSet:sampleTrain(dst, path, centeronly)
+   return self:sampleDefault(dst, path, centeronly)
 end
 
-function ImagePatchSet:sampleTest(dst, path)
-   return self:sampleDefault(dst, path)
+function ImagePatchSet:sampleTest(dst, path, centeronly)
+   return self:sampleDefault(dst, path, centeronly)
 end
 
 -- function to load the image, do 10 crops (center + 4 corners) and their hflips
@@ -439,16 +465,18 @@ function ImagePatchSet:sampleTop10(dst, path)
 end
 
 -- data normalization
-function ImagePatchSet:normalization(ntotalsamples)
+function ImagePatchSet:normalization(ntotalimages)
    if self.meanstd then
       print('return pre-computed mean std', self.meanstd)
       return self.meanstd
    end
 
-   local ntotalsamples = ntotalsamples or 10000
-
+   local ntotalimages = ntotalimages or 10000
    local batchsize = 128
-   local sampleperimage = 10
+   local sampleperimage = 2
+   if self.verbose then
+      print(string.format('normalization on %d images x %d samples per image (batch size %d)', ntotalimages, sampleperimage, batchsize))
+   end
    local samplefunc = 'sampleDefault'
    -- reset normalization vectors
    local mean, std
@@ -461,21 +489,27 @@ function ImagePatchSet:normalization(ntotalsamples)
    end
    local inputs, targets, imagepaths
    local ns = 0
-   for i=1,ntotalsamples,batchsize do 
-      inputs, targets, imagepaths = self:sample(batchsize, inputs, targets, samplefunc, sampleperimage)
+   for i=1,ntotalimages,batchsize do 
+      inputs, targets, imagepaths = self:sample(batchsize, inputs, targets, samplefunc, false, sampleperimage)
       if inputs then
-         for j=1,#self.mean do
+         for j=1,#mean do
             mean[j] = mean[j] + inputs:select(2,j):mean() --input[{{},j,{},{}}]:mean()
             std[j]  = std[j] + inputs:select(2,j):std() --input[{{},j,{},{}}]:std()
          end
          ns = ns + batchsize
       end
+      if self.verbose then 
+         xlua.progress(ns, ntotalimages)
+      end
+   end
+   if self.verbose then 
+      xlua.progress(ntotalimages, ntotalimages)
    end
    if ns>0 then
       ns = math.max(1, ns)
       for j=1,#mean do
-         mean[j] = mean[j]*bs / ns
-         std[j] = std[j]*bs / ns
+         mean[j] = mean[j]*batchsize / ns
+         std[j] = std[j]*batchsize / ns
       end
       self.meanstd = {mean=mean,std=std}
       print(self.meanstd)
@@ -491,6 +525,7 @@ function ImagePatchSet:normalizesamples(inputs)
    end
 
    local mean, std = self.meanstd.mean, self.meanstd.std
+   --print('normalizesamples', #inputs)
    for i=1,inputs:size(2) do
       inputs:select(2,i):add(-mean[i]):div(std[i])
    end

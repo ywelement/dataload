@@ -330,6 +330,87 @@ function dltest.ImageClass()
    mytester:assert(targets:view(5,10):float():std(2):sum() < 0.0000001)
 end
 
+function dltest.ImagePatchSet()
+   local datapath = paths.concat(dl.DATA_PATH, "_unittest_")
+   local buffer
+   
+   if not paths.dirp(datapath) then
+      -- create a dummy dataset based on MNIST
+      local mnist = dl.loadMNIST()
+      
+      os.execute("rm -r "..datapath)
+      
+      paths.mkdir(datapath)
+      
+      local inputs, targets
+      for i=1,3 do
+         local classpath = paths.concat(datapath, "class"..i)
+         paths.mkdir(classpath)
+         inputs, targets = mnist:sample(100, inputs, targets)
+         for j=1,50 do
+            local input = inputs[j]
+            if math.random() < 0.5 then
+               buffer = buffer or inputs.new()
+               if math.random() < 0.5 then 
+                  buffer:resize(1, 32, 28)
+               else
+                  buffer:resize(1, 28, 32)
+               end
+               image.scale(buffer, input)
+               input = buffer
+            end
+            image.save(paths.concat(classpath, "image"..j..".jpg"), input)
+         end
+      end
+   end
+   
+   local ds = dl.ImagePathSet(datapath, {1, 20, 20}, nil, nil, false, nil, "*/ignore/*")
+   
+   -- test index
+   local inputs, targets, imagepaths = ds:index(torch.LongTensor():range(1,100), nil, nil, 'sampleTrain', true, 1, true)
+   local inputs2 = inputs:clone():zero()
+   local buffer = torch.FloatTensor()
+   
+   for i=1,100 do
+      local imgpath = ffi.string(torch.data(ds.imagePath[i]))
+      --local input = ds:loadImage(imgpath)
+      local input = inputs[i]
+      
+      -- also make sure that cropping happens the same way
+      local img = image.load(imgpath):float()
+      local iW, iH = img:size(3), img:size(2)
+      local oW, oH = self.samplesize[3], self.samplesize[2]
+      -- check if image size is valid
+      if iW<oW or iH<oH then
+         return dst
+      end
+      local h1 = math.max(0, math.floor((iH-oH)/2))+1
+      local w1 = math.max(0, math.floor((iW-oW)/2))+1
+      local out = img:narrow(2,h1+1,oH):narrow(3,w1+1,oW)
+      buffer:resizeAs(out):copy(out)
+      
+      mytester:assertTensorEq(input, buffer, 0.00001)
+      
+      inputs2[i]:copy(buffer)
+   end
+   
+   mytester:assertTensorEq(inputs, inputs2, 0.000001)
+   
+   -- test size
+   mytester:assert(ds:size() == 150)
+   
+   -- test sample
+   local inputs_, targets_ = inputs, targets
+   inputs, targets = ds:sample(100, inputs, targets)
+   mytester:assert(torch.pointer(inputs:storage():data()) == torch.pointer(inputs_:storage():data()))
+   mytester:assert(torch.pointer(targets:storage():data()) == torch.pointer(targets_:storage():data()))
+   mytester:assertTableEq(inputs:size():totable(), {100,1,20,20}, 0.000001)
+   mytester:assertTableEq(targets:size():totable(), {100}, 0.000001)
+   --mytester:assert(targets:min() >= 1)
+   --mytester:assert(targets:max() <= 3)
+   mytester:assert(inputs:view(100,-1):sum(2):min() > 0)
+end
+
 function dltest.AsyncIterator()
    if not pcall(function() require 'threads' end) then
       return

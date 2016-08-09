@@ -234,31 +234,37 @@ function ImagePatchSet:size(class, list)
    end
 end
 
-function ImagePatchSet:index(indices, inputs, targets, samplefunc)
+function ImagePatchSet:index(indices, inputs, targets, samplefunc, samplenorm, sampleperimage, centerfirst)
    local imagepaths = {}
+   local samplenorm = samplenorm or false
+   local sampleperimage = sampleperimage or 1
    
    samplefunc = samplefunc or self.samplefunc
    if torch.type(samplefunc) == 'string' then
       samplefunc = self[samplefunc]
    end
 
-   local inputTable = {}
-   local targetTable = {}
+   local nsamples = indices:size(1) * sampleperimage
+   inputs = inputs or torch.FloatTensor(nsamples, unpack(self.samplesize))
+   targets = targets or torch.LongTensor(nsamples)
    for i = 1, indices:size(1) do
       local idx = indices[i]
       -- load the sample
       local imgpath = ffi.string(torch.data(self.imagePath[idx]))
       imagepaths[i] = imgpath
       local dst = self:getImageBuffer(i)
-      -- note that dst may have different sizes at this point
-      dst = samplefunc(self, dst, imgpath)
-      table.insert(inputTable, dst)
-      table.insert(targetTable, self.imageClass[idx])
+      if j==1 and centerfirst then
+         dst = samplefunc(self, dst, imgpath, centerfirst)
+      else
+         dst = samplefunc(self, dst, imgpath)
+      end
+      inputs[i]:copy(dst)
+      targets[i] = self.imageClass[idx]
    end
-
-   inputs = inputs or torch.FloatTensor()
-   targets = targets or torch.LongTensor()
-   self:tableToTensor(inputTable, targetTable, inputs, targets)
+   
+   if samplenorm then
+      self:normalizesamples(inputs)
+   end
 
    self:collectgarbage()
    return inputs, targets, imagepaths
@@ -292,12 +298,20 @@ function ImagePatchSet:sample(batchsize, inputs, targets, samplefunc, samplenorm
          local idx = idx_shuffle[(i-1)*sampleperimage+(j-1)+1]
          imagepaths[idx] = imgpath
          local dst = self:getImageBuffer(idx)
-         dst = samplefunc(self, dst, imgpath)
+         if j==1 and centerfirst then
+            dst = samplefunc(self, dst, imgpath, centerfirst)
+         else
+            dst = samplefunc(self, dst, imgpath)
+         end
          inputs[idx]:copy(dst)
          targets[idx] = class
       end
    end
    
+   if samplenorm then
+      self:normalizesamples(inputs)
+   end
+
    self:collectgarbage()
    return inputs, targets, imagepaths
 end
@@ -445,7 +459,7 @@ function ImagePatchSet:normalization(ntotalsamples)
       mean = {0,0,0}
       std = {0,0,0}
    end
-   local inputs, targets, imagepaths = nil, nil, nil
+   local inputs, targets, imagepaths
    local ns = 0
    for i=1,ntotalsamples,batchsize do 
       inputs, targets, imagepaths = self:sample(batchsize, inputs, targets, samplefunc, sampleperimage)
@@ -468,4 +482,17 @@ function ImagePatchSet:normalization(ntotalsamples)
    end
 
    return self.meanstd
+end
+
+function ImagePatchSet:normalizesamples(inputs)
+   if not self.meanstd then
+      print('no pre-computed mean std')
+      return inputs
+   end
+
+   local mean, std = self.meanstd.mean, self.meanstd.std
+   for i=1,inputs:size(2) do
+      inputs:select(2,i):add(-mean[i]):div(std[i])
+   end
+   return inputs
 end

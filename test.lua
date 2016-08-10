@@ -337,9 +337,7 @@ function dltest.ImagePatchSet()
    if not paths.dirp(datapath) then
       -- create a dummy dataset based on MNIST
       local mnist = dl.loadMNIST()
-      
       os.execute("rm -r "..datapath)
-      
       paths.mkdir(datapath)
       
       local inputs, targets
@@ -364,37 +362,63 @@ function dltest.ImagePatchSet()
       end
    end
    
-   local ds = dl.ImagePathSet(datapath, {1, 20, 20}, nil, nil, false, nil, "*/ignore/*")
+   print('create ImagePatchSet')
+   local patchsize = {3, 8, 8}
+   local verbose = false
+   local ds = dl.ImagePatchSet(datapath, patchsize, nil, nil, verbose, nil, "*/ignore/*")
+   print('normalization')
+   local meanstd = ds:normalization(200)
+   local mean, std = meanstd.mean, meanstd.std
    
    -- test index
-   local inputs, targets, imagepaths = ds:index(torch.LongTensor():range(1,100), nil, nil, 'sampleTrain', true, 1, true)
+   local samplenorm = true
+   local inputs, targets, imagepaths = ds:index(torch.LongTensor():range(1,100), nil, nil, 'sampleTrain', samplenorm, 1, true)
    local inputs2 = inputs:clone():zero()
    local buffer = torch.FloatTensor()
    
    for i=1,100 do
       local imgpath = ffi.string(torch.data(ds.imagePath[i]))
+      --print(i, imagepaths[i])
+      --print('load ' .. imgpath)
       --local input = ds:loadImage(imgpath)
       local input = inputs[i]
       
-      -- also make sure that cropping happens the same way
+      -- load image
+      --local img = ds:loadImage(imgpath):float()
       local img = image.load(imgpath):float()
-      local iW, iH = img:size(3), img:size(2)
-      local oW, oH = self.samplesize[3], self.samplesize[2]
-      -- check if image size is valid
-      if iW<oW or iH<oH then
-         return dst
+      if img:size(1)==1 then
+         img = torch.repeatTensor(img,3,1,1)
       end
+      -- convert to yuv space for color image
+      img = image.rgb2yuv(img):float()
+      -- use Y channel as grayscale if required
+      if ds.samplesize[1]==1 and img:size(1)>1 then
+         img = img[{{1},{},{}}]
+      end
+
+      -- also make sure that cropping happens the same way
+      local iW, iH = img:size(3), img:size(2)
+      local oW, oH = patchsize[3], patchsize[2]
+      -- check if image size is valid
+      --if iW<oW or iH<oH then return dst end
       local h1 = math.max(0, math.floor((iH-oH)/2))+1
       local w1 = math.max(0, math.floor((iW-oW)/2))+1
+      --print(w1,h1, oW,oH, iW,iH)
       local out = img:narrow(2,h1+1,oH):narrow(3,w1+1,oW)
       buffer:resizeAs(out):copy(out)
+      if samplenorm then
+         for j=1,buffer:size(1) do
+            buffer:select(1,j):add(-mean[j]):div(std[j])
+         end
+      end
       
+      --print(i, input[1], buffer[1], out[1])
       mytester:assertTensorEq(input, buffer, 0.00001)
       
       inputs2[i]:copy(buffer)
    end
    
-   mytester:assertTensorEq(inputs, inputs2, 0.000001)
+   mytester:assertTensorEq(inputs, inputs2, 0.00001)
    
    -- test size
    mytester:assert(ds:size() == 150)
@@ -404,11 +428,12 @@ function dltest.ImagePatchSet()
    inputs, targets = ds:sample(100, inputs, targets)
    mytester:assert(torch.pointer(inputs:storage():data()) == torch.pointer(inputs_:storage():data()))
    mytester:assert(torch.pointer(targets:storage():data()) == torch.pointer(targets_:storage():data()))
-   mytester:assertTableEq(inputs:size():totable(), {100,1,20,20}, 0.000001)
+   mytester:assertTableEq(inputs:size():totable(), {100,unpack(patchsize)}, 0.000001)
    mytester:assertTableEq(targets:size():totable(), {100}, 0.000001)
    --mytester:assert(targets:min() >= 1)
    --mytester:assert(targets:max() <= 3)
    mytester:assert(inputs:view(100,-1):sum(2):min() > 0)
+
 end
 
 function dltest.AsyncIterator()

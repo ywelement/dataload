@@ -42,7 +42,13 @@ function ImagePatchSet:__init(datapath, samplesize, samplefunc, sortfunc, verbos
    
    -- comparison operator used for sorting class dir to get idx.
    self.sortfunc = sortfunc -- Defaults to < operator
-   
+
+   -- sampling properties
+   self.samplenorm = false
+   self.sampleperimage = 1
+   self.traincenterfirst = false
+   self.testcenterfirst = false
+
    -- 2. build index 
    
    -- will need this package later to load images (faster than image package)
@@ -242,12 +248,19 @@ function ImagePatchSet:size(class, list)
    end
 end
 
-function ImagePatchSet:index(indices, inputs, targets, samplefunc, samplenorm, sampleperimage, centerfirst)
+function ImagePatchSet:setSampleProperties(samplenorm, sampleperimage, traincenterfirst, testcenterfirst)
+   self.samplenorm = samplenorm
+   self.sampleperimage = sampleperimage
+   self.traincenterfirst = traincenterfirst
+   self.testcenterfirst = testcenterfirst
+end
+
+function ImagePatchSet:index(indices, inputs, targets, samplefunc)
    local imagepaths = {}
-   local samplenorm = samplenorm or false
-   local sampleperimage = sampleperimage or 1
+   local samplenorm = self.samplenorm or false
+   local sampleperimage = self.sampleperimage or 1
+   --local centerfirst = self.traincenterfirst or false
    
-   --print('index ', samplefunc, centerfirst)
    samplefunc = samplefunc or self.samplefunc
    if torch.type(samplefunc) == 'string' then
       samplefunc = self[samplefunc]
@@ -263,7 +276,7 @@ function ImagePatchSet:index(indices, inputs, targets, samplefunc, samplenorm, s
       local imgpath = ffi.string(torch.data(self.imagePath[idx]))
       imagepaths[i] = imgpath
       --dst = self:getImageBuffer(i)
-      dst = samplefunc(self, dst, imgpath, centerfirst)
+      dst = samplefunc(self, dst, imgpath)
       inputs[i]:copy(dst)
       targets[i] = self.imageClass[idx]
    end
@@ -282,10 +295,12 @@ end
 -- This keeps the class distribution balanced.
 -- samplefunc is a function that generates one or many samples
 -- from one image. e.g. sampleDefault, sampleTrain, sampleTest.
-function ImagePatchSet:sample(batchsize, inputs, targets, samplefunc, samplenorm, sampleperimage, centerfirst)
+function ImagePatchSet:sample(batchsize, inputs, targets, samplefunc)
    local imagepaths = {}
-   local samplenorm = samplenorm or false
-   local sampleperimage = sampleperimage or 1
+   local samplenorm = self.samplenorm or false
+   local sampleperimage = self.sampleperimage or 1
+   local centerfirst = self.traincenterfirst or false
+   --print('sample', samplenorm, sampleperimage, centerfirst)
    
    samplefunc = samplefunc or self.samplefunc
    if torch.type(samplefunc) == 'string' then
@@ -296,7 +311,8 @@ function ImagePatchSet:sample(batchsize, inputs, targets, samplefunc, samplenorm
    inputs = inputs or torch.FloatTensor(nsamples, unpack(self.samplesize))
    targets = targets or torch.LongTensor(nsamples)
    local idx_shuffle = torch.randperm(nsamples)
-   for i=1,batchsize do
+   local i = 1
+   while i<=batchsize do
       -- sample class
       local class = torch.random(1, #self.classes)
       -- sample image from class
@@ -304,16 +320,19 @@ function ImagePatchSet:sample(batchsize, inputs, targets, samplefunc, samplenorm
       local imgpath = ffi.string(torch.data(self.imagePath[self.classListSample[class][index]]))
       --local input = self:getImageBuffer(idx)
       local input = self:loadImage(imgpath)
-      for j = 1,sampleperimage do 
-         local idx = idx_shuffle[(i-1)*sampleperimage+(j-1)+1]
-         imagepaths[idx] = imgpath
-         if j==1 then
-            dst = samplefunc(self, input, imgpath, centerfirst)
-         else
-            dst = samplefunc(self, input, imgpath)
+      if input then
+         for j = 1,sampleperimage do 
+            local idx = idx_shuffle[(i-1)*sampleperimage+(j-1)+1]
+            imagepaths[idx] = imgpath
+            if j==1 then
+               dst = samplefunc(self, input, imgpath, centerfirst)
+            else
+               dst = samplefunc(self, input, imgpath)
+            end
+            inputs[idx]:copy(dst)
+            targets[idx] = class
          end
-         inputs[idx]:copy(dst)
-         targets[idx] = class
+         i = i+1
       end
    end
    
@@ -346,7 +365,7 @@ function ImagePatchSet:tableToTensor(inputTable, targetTable, inputTensor, targe
 end
 
 function ImagePatchSet:loadImage(path, fixchannels)
-   local fixchannels = fixchannels or true
+   local fixchannels = fixchannels or (fixchannels==nil and true)
    -- load image with size hints
    --local gm = require 'graphicsmagick'
    --local input = gm.Image():load(path, self.loadsize[3], self.loadsize[2])
@@ -380,7 +399,7 @@ function ImagePatchSet:sampleDefault(dst, path, centeronly)
    if not path then
       path, dst = dst, nil
    end
-   local centeronly = centeronly or false
+   local centeronly = centeronly or self.traincenterfirst or false
    dst = dst or torch.FloatTensor()
    
    local input = path
@@ -407,7 +426,7 @@ function ImagePatchSet:sampleDefault(dst, path, centeronly)
       h1 = math.ceil(torch.uniform(0, iH-oH))
       w1 = math.ceil(torch.uniform(0, iW-oW))
    end
-   --print(w1,h1,oW,oH,iW,iH)
+   --print(centeronly, w1,h1,oW,oH,iW,iH)
    --local out = input:crop(oW, oH, w1, h1)
    local out = input:narrow(2,h1+1,oH):narrow(3,w1+1,oW)
    -- do hflip with probability 0.5
@@ -418,10 +437,12 @@ end
 
 -- function to load the image, jitter it appropriately (random crops etc.)
 function ImagePatchSet:sampleTrain(dst, path, centeronly)
+   local centeronly = centeronly or (centeronly==nil and self.traincenterfirst)
    return self:sampleDefault(dst, path, centeronly)
 end
 
 function ImagePatchSet:sampleTest(dst, path, centeronly)
+   local centeronly = centeronly or (centeronly==nil and self.testcenterfirst)
    return self:sampleDefault(dst, path, centeronly)
 end
 
@@ -512,7 +533,9 @@ function ImagePatchSet:normalization(ntotalimages)
          std[j] = std[j]*batchsize / ns
       end
       self.meanstd = {mean=mean,std=std}
-      print(self.meanstd)
+      if self.verbose then
+         print(self.meanstd)
+      end
    end
 
    return self.meanstd

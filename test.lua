@@ -362,21 +362,23 @@ function dltest.ImagePatchSet()
       end
    end
    
-   print('create ImagePatchSet')
+   --print('create ImagePatchSet')
    local patchsize = {3, 8, 8}
    local verbose = false
    local ds = dl.ImagePatchSet(datapath, patchsize, nil, nil, verbose, nil, "*/ignore/*")
-   print('normalization')
-   local meanstd = ds:normalization(200)
+   --print('normalization')
+   local meanstd = ds:normalization(100)
    local mean, std = meanstd.mean, meanstd.std
    
    -- test index
+   local ntotalsamples = 100
    local samplenorm = true
-   local inputs, targets, imagepaths = ds:index(torch.LongTensor():range(1,100), nil, nil, 'sampleTrain', samplenorm, 1, true)
+   ds:setSampleProperties(samplenorm, 1, true, true)
+   local inputs, targets, imagepaths = ds:index(torch.LongTensor():range(1,ntotalsamples), nil, nil, 'sampleTrain')
    local inputs2 = inputs:clone():zero()
    local buffer = torch.FloatTensor()
    
-   for i=1,100 do
+   for i=1,ntotalsamples do
       local imgpath = ffi.string(torch.data(ds.imagePath[i]))
       --print(i, imagepaths[i])
       --print('load ' .. imgpath)
@@ -425,14 +427,14 @@ function dltest.ImagePatchSet()
    
    -- test sample
    local inputs_, targets_ = inputs, targets
-   inputs, targets = ds:sample(100, inputs, targets)
+   inputs, targets = ds:sample(ntotalsamples, inputs, targets)
    mytester:assert(torch.pointer(inputs:storage():data()) == torch.pointer(inputs_:storage():data()))
    mytester:assert(torch.pointer(targets:storage():data()) == torch.pointer(targets_:storage():data()))
-   mytester:assertTableEq(inputs:size():totable(), {100,unpack(patchsize)}, 0.000001)
-   mytester:assertTableEq(targets:size():totable(), {100}, 0.000001)
+   mytester:assertTableEq(inputs:size():totable(), {ntotalsamples,unpack(patchsize)}, 0.000001)
+   mytester:assertTableEq(targets:size():totable(), {ntotalsamples}, 0.000001)
    --mytester:assert(targets:min() >= 1)
    --mytester:assert(targets:max() <= 3)
-   mytester:assert(inputs:view(100,-1):sum(2):min() > 0)
+   --mytester:assert(inputs:view(ntotalsamples,-1):sum(2):min() > 0)
 
 end
 

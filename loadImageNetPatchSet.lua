@@ -8,7 +8,8 @@ local dl = require 'dataload._env'
 -- Due to its size, the data first needs to be prepared offline :
 -- 1. use scripts/downloadimagenet.lua to download and extract the data
 -- 2. use scripts/harmonizeimagenet.lua to harmonize train/valid sets
-function dl.loadImageNetPatchSet(datapath, nthread, samplesize, verbose)
+function dl.loadImageNetPatchSet(datapath, nthread, samplesize, samplenorm, sampleperimage, 
+                                 traincenterfirst, testcenterfirst, verbose)
    -- 1. arguments and defaults
    
    -- path containing 3 folders : ILSVRC2012_img_train, ILSVRC2012_img_val and metadata
@@ -17,6 +18,13 @@ function dl.loadImageNetPatchSet(datapath, nthread, samplesize, verbose)
    nthread = nthread or 2
    -- consistent size for cropped patches from loaded images.
    samplesize = samplesize or {3, 17*3, 17*3}
+   -- normalize samples
+   samplenorm = samplenorm or false
+   -- how many samples per image
+   sampleperimage = sampleimage or 1
+   -- crop the center patch first
+   traincenterfirst = traincenterfirst or false
+   testcenterfirst = testcenterfirst or false
    -- verbose initialization
    verbose = verbose == nil and true or verbose
 
@@ -33,6 +41,8 @@ function dl.loadImageNetPatchSet(datapath, nthread, samplesize, verbose)
    
    local train = dl.ImagePatchSet(trainpath, samplesize, 'sampleTrain', sortfunc, verbose)
    local valid = dl.ImagePatchSet(validpath, samplesize, 'sampleTest',  sortfunc, verbose)
+
+   setSampleProperties(samplenorm, sampleperimage, traincenterfirst, testcenterfirst)
    
    train = dl.AsyncIterator(train, nthread)
    valid = dl.AsyncIterator(valid, nthread)

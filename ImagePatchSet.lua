@@ -259,7 +259,7 @@ function ImagePatchSet:index(indices, inputs, targets, samplefunc)
    local imagepaths = {}
    local samplenorm = self.samplenorm or false
    local sampleperimage = self.sampleperimage or 1
-   --local centerfirst = self.traincenterfirst or false
+   local centerfirst = self.traincenterfirst or false
    
    samplefunc = samplefunc or self.samplefunc
    if torch.type(samplefunc) == 'string' then
@@ -267,18 +267,46 @@ function ImagePatchSet:index(indices, inputs, targets, samplefunc)
    end
 
    local nsamples = indices:size(1) * sampleperimage
-   inputs = inputs or torch.FloatTensor(nsamples, unpack(self.samplesize))
-   targets = targets or torch.LongTensor(nsamples)
+   inputs = inputs or torch.FloatTensor(nsamples, unpack(self.samplesize)):fill(0)
+   targets = targets or torch.LongTensor(nsamples):fill(0)
+   if inputs:size(1)~=nsamples then
+      inputs:resize(nsamples, unpack(self.samplesize))
+      targets:resize(nsamples)
+   end
    local dst
+   local i, ii = 1, 1
    for i = 1, indices:size(1) do
       local idx = indices[i]
       -- load the sample
       local imgpath = ffi.string(torch.data(self.imagePath[idx]))
-      imagepaths[i] = imgpath
-      --dst = self:getImageBuffer(i)
-      dst = samplefunc(self, dst, imgpath)
-      inputs[i]:copy(dst)
-      targets[i] = self.imageClass[idx]
+      local input = self:loadImage(imgpath)
+      if input then
+         for j = 1,sampleperimage do
+            iidx = (i-1)*sampleperimage+(j-1)+1
+            imagepaths[iidx] = imgpath
+            dst = self:getImageBuffer(iidx)
+            if j==1 then
+               dst = samplefunc(self, dst, input, centerfirst)
+            else
+               dst = samplefunc(self, dst, input)
+            end
+            if dst then 
+               --print(i, ii, string.format("copy dst %dx%dx%d to inputs %dx%dx%d", 
+               --      dst:size(1), dst:size(2), dst:size(3), 
+               --      inputs[i]:size(1), inputs[i]:size(2), inputs[i]:size(3)))
+               inputs[ii]:copy(dst)
+               targets[ii] = self.imageClass[idx]
+               ii = ii+1
+            end
+         end
+      end
+   end
+   -- fill the missing samples
+   if ii>1 and ii<=inputs:size(1) then
+      for i = ii, inputs:size(1) do
+         inputs[i]:copy(inputs[ii-1])
+         targets[i] = targets[ii-1]
+      end
    end
    --print(inputs[{{1,3},1,{},{}}])
    
@@ -312,27 +340,40 @@ function ImagePatchSet:sample(batchsize, inputs, targets, samplefunc)
    targets = targets or torch.LongTensor(nsamples)
    local idx_shuffle = torch.randperm(nsamples)
    local i = 1
+   local dst
    while i<=batchsize do
       -- sample class
       local class = torch.random(1, #self.classes)
       -- sample image from class
       local index = torch.random(1, self.classListSample[class]:nElement())
       local imgpath = ffi.string(torch.data(self.imagePath[self.classListSample[class][index]]))
-      --local input = self:getImageBuffer(idx)
       local input = self:loadImage(imgpath)
       if input then
-         for j = 1,sampleperimage do 
+         local j = 1
+         while j<=sampleperimage do 
             local idx = idx_shuffle[(i-1)*sampleperimage+(j-1)+1]
+            dst = self:getImageBuffer(idx)
             imagepaths[idx] = imgpath
             if j==1 then
-               dst = samplefunc(self, input, imgpath, centerfirst)
+               dst = samplefunc(self, dst, input, centerfirst)
             else
-               dst = samplefunc(self, input, imgpath)
+               dst = samplefunc(self, dst, input)
             end
-            inputs[idx]:copy(dst)
-            targets[idx] = class
+            if dst then
+               --print(i, idx, string.format("copy dst %dx%dx%d to inputs %dx%dx%d", 
+               --      dst:size(1), dst:size(2), dst:size(3), 
+               --      inputs[idx]:size(1), inputs[idx]:size(2), inputs[idx]:size(3)))
+               inputs[idx]:copy(dst)
+               targets[idx] = class
+               j = j+1
+            elseif j==1 then
+               -- skip invalid image to avoid an infinite loop
+               break
+            end
          end
-         i = i+1
+         if j>1 then
+            i = i+1
+         end
       end
    end
    
@@ -378,6 +419,9 @@ function ImagePatchSet:loadImage(path, fixchannels)
 
    if img:size(1)==1 then
       img = torch.repeatTensor(img,3,1,1)
+   elseif img:size(1)>3 then
+      print('invalid image channels ' .. img:size(1))
+      img = img:narrow(1,1,3)
    end
    -- convert to yuv space for color image
    local input = image.rgb2yuv(img):float() 
@@ -394,27 +438,28 @@ function ImagePatchSet:getImageBuffer(i)
    return self.imgBuffers[i]
 end
 
--- just load the image and return it
-function ImagePatchSet:sampleDefault(dst, path, centeronly)
-   if not path then
-      path, dst = dst, nil
+-- extract a patch from image data
+-- if data is a file path, the image will be loaded first
+function ImagePatchSet:sampleDefault(dst, data, centeronly)
+   if not data then
+      data, dst = dst, nil
    end
    local centeronly = centeronly or self.traincenterfirst or false
    dst = dst or torch.FloatTensor()
    
-   local input = path
+   local input = data
    if type(input)=='string' then
-      input = self:loadImage(path)
+      input = self:loadImage(data)
    end
    -- check if image channels match
    if self.samplesize[1]>1 and input:size(1)==1 then
-      return dst
+      return nil --dst
    end
    local iW, iH = input:size(3), input:size(2)
    local oW, oH = self.samplesize[3], self.samplesize[2]
    -- check if image size is valid
    if iW<oW or iH<oH then
-      return dst
+      return nil --dst
    end
    local h1, w1
    if centeronly then
@@ -436,14 +481,14 @@ function ImagePatchSet:sampleDefault(dst, path, centeronly)
 end
 
 -- function to load the image, jitter it appropriately (random crops etc.)
-function ImagePatchSet:sampleTrain(dst, path, centeronly)
+function ImagePatchSet:sampleTrain(dst, data, centeronly)
    local centeronly = centeronly or (centeronly==nil and self.traincenterfirst)
-   return self:sampleDefault(dst, path, centeronly)
+   return self:sampleDefault(dst, data, centeronly)
 end
 
-function ImagePatchSet:sampleTest(dst, path, centeronly)
+function ImagePatchSet:sampleTest(dst, data, centeronly)
    local centeronly = centeronly or (centeronly==nil and self.testcenterfirst)
-   return self:sampleDefault(dst, path, centeronly)
+   return self:sampleDefault(dst, data, centeronly)
 end
 
 -- function to load the image, do 10 crops (center + 4 corners) and their hflips

@@ -280,3 +280,7 @@ end
 function AsyncIterator:size(...)
    return self.dataset:size(...)
 end
+
+function AsyncIterator:normalization(...)
+   return self.dataset:normalization(...)
+end

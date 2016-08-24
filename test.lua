@@ -925,6 +925,79 @@ function dltest.loadImageNet()
    end
 end
 
+function dltest.loadImageNetPatchSet()
+   local nthread = 2
+   local samplesize = {3, 17*3, 17*3}
+   local samplenorm = false
+   local trainsampleperimage = 2
+   local testsampleperimage = 1
+   local traincenterfirst = false
+   local testcenterfirst = true
+   local batchsize = 32
+   local epochsize = 5000
+   local datapath = '/media/eos/private/data_ImageNet/'
+   local outpath = '/media/eos/private/debug/imagenetpatchset/'
+   
+   if not paths.dirp(datapath) then
+      return
+   end
+   
+   local train, valid = dl.loadImageNetPatchSet(datapath, nthread, samplesize, samplenorm, 
+                                                trainsampleperimage, testsampleperimage, 
+                                                traincenterfirst, testcenterfirst, true)
+
+   -- test subiter
+   local a = torch.Timer()
+   local isum, tsum = 0, 0
+   for i, inputs, targets in valid:subiter(batchsize, epochsize) do
+      isum = isum + inputs:sum()
+      tsum = tsum + targets:sum()
+   end
+   print("async subiter finished in "..a:time().real.." seconds: ", isum, tsum)
+   
+   local a = torch.Timer()
+   local isum2, tsum2 = 0, 0
+   valid.dataset:reset()
+   for i, inputs, targets in valid.dataset:subiter(batchsize, epochsize) do
+      isum2 = isum2 + inputs:sum()
+      tsum2 = tsum2 + targets:sum()
+   end
+   print("sync subiter finished in "..a:time().real.." seconds: ", isum2, tsum2)
+   
+   mytester:assert(math.abs(isum - isum2) < 0.000001)
+   mytester:assert(math.abs(tsum - tsum2) < 0.000001)
+
+   -- test sampleiter
+   local a = torch.Timer()
+   for i, inputs, targets, imagepaths in train:sampleiter(batchsize, epochsize) do
+      -- pass
+   end
+   print("async sampleiter finished in " .. a:time().real .. " seconds")
+
+   local a = torch.Timer()
+   for i, inputs, targets, imagepaths in train.dataset:subiter(batchsize, epochsize) do
+      -- pass
+   end
+   print("sync sampleiter finished in " .. a:time().real .. " seconds")
+ 
+   -- save some images from train and valid set loaders
+   local samplepath = paths.concat(outpath, 'unittest')
+   paths.mkdir(samplepath)
+   for i, inputs, targets, imagepaths in train:sampleiter(batchsize, 400) do
+      for idx=1,#imagepaths do
+         local input, target = inputs[idx], targets[idx]
+         image.save(paths.concat(samplepath, target..'_t_'..paths.basename(imagepaths[idx])), image.yuv2rgb(input))
+      end
+   end
+   for i, inputs, targets, imagepaths in valid:sampleiter(batchsize, 400) do
+      for idx=1,#imagepaths do
+         local input, target = inputs[idx], targets[idx]
+         image.save(paths.concat(samplepath, target..'_t_'..paths.basename(imagepaths[idx])), image.yuv2rgb(input))
+      end
+   end
+end
+
+
 function dltest.fitImageNormalize()
    local trainset, validset, testset = dl.loadMNIST()
    local ppf = dl.fitImageNormalize(trainset, 5000)

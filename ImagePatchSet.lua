@@ -259,7 +259,7 @@ function ImagePatchSet:index(indices, inputs, targets, samplefunc)
    local imagepaths = {}
    local samplenorm = self.samplenorm or false
    local sampleperimage = self.sampleperimage or 1
-   local centerfirst = self.traincenterfirst or false
+   --local centerfirst = self.traincenterfirst or false
    
    samplefunc = samplefunc or self.samplefunc
    if torch.type(samplefunc) == 'string' then
@@ -285,11 +285,7 @@ function ImagePatchSet:index(indices, inputs, targets, samplefunc)
             iidx = (i-1)*sampleperimage+(j-1)+1
             imagepaths[iidx] = imgpath
             dst = self:getImageBuffer(iidx)
-            if j==1 then
-               dst = samplefunc(self, dst, input, centerfirst)
-            else
-               dst = samplefunc(self, dst, input)
-            end
+            dst = samplefunc(self, dst, input, j==1)
             if dst then 
                --print(i, ii, string.format("copy dst %dx%dx%d to inputs %dx%dx%d", 
                --      dst:size(1), dst:size(2), dst:size(3), 
@@ -327,7 +323,7 @@ function ImagePatchSet:sample(batchsize, inputs, targets, samplefunc)
    local imagepaths = {}
    local samplenorm = self.samplenorm or false
    local sampleperimage = self.sampleperimage or 1
-   local centerfirst = self.traincenterfirst or false
+   --local centerfirst = self.traincenterfirst or false
    --print('sample', samplenorm, sampleperimage, centerfirst)
    
    samplefunc = samplefunc or self.samplefunc
@@ -354,11 +350,7 @@ function ImagePatchSet:sample(batchsize, inputs, targets, samplefunc)
             local idx = idx_shuffle[(i-1)*sampleperimage+(j-1)+1]
             dst = self:getImageBuffer(idx)
             imagepaths[idx] = imgpath
-            if j==1 then
-               dst = samplefunc(self, dst, input, centerfirst)
-            else
-               dst = samplefunc(self, dst, input)
-            end
+            dst = samplefunc(self, dst, input, j==1)
             if dst then
                --print(i, idx, string.format("copy dst %dx%dx%d to inputs %dx%dx%d", 
                --      dst:size(1), dst:size(2), dst:size(3), 
@@ -444,7 +436,7 @@ function ImagePatchSet:sampleDefault(dst, data, centeronly)
    if not data then
       data, dst = dst, nil
    end
-   local centeronly = centeronly or self.traincenterfirst or false
+   local centeronly = centeronly or false
    dst = dst or torch.FloatTensor()
    
    local input = data
@@ -481,13 +473,13 @@ function ImagePatchSet:sampleDefault(dst, data, centeronly)
 end
 
 -- function to load the image, jitter it appropriately (random crops etc.)
-function ImagePatchSet:sampleTrain(dst, data, centeronly)
-   local centeronly = centeronly or (centeronly==nil and self.traincenterfirst)
+function ImagePatchSet:sampleTrain(dst, data, firstsample)
+   local centeronly = (firstsample and self.traincenterfirst) or false
    return self:sampleDefault(dst, data, centeronly)
 end
 
-function ImagePatchSet:sampleTest(dst, data, centeronly)
-   local centeronly = centeronly or (centeronly==nil and self.testcenterfirst)
+function ImagePatchSet:sampleTest(dst, data, firstsample)
+   local centeronly = (firstsample and self.testcenterfirst) or false
    return self:sampleDefault(dst, data, centeronly)
 end
 

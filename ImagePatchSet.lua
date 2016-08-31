@@ -460,12 +460,12 @@ function ImagePatchSet:sampleDefault(dst, data, centeronly)
       w1 = math.max(0, math.floor((iW-oW)/2))+1
    else
       -- do random crop
-      h1 = math.ceil(torch.uniform(0, iH-oH))
-      w1 = math.ceil(torch.uniform(0, iW-oW))
+      h1 = math.ceil(torch.uniform(0, iH-oH))+1
+      w1 = math.ceil(torch.uniform(0, iW-oW))+1
    end
    --print(centeronly, w1,h1,oW,oH,iW,iH)
    --local out = input:crop(oW, oH, w1, h1)
-   local out = input:narrow(2,h1+1,oH):narrow(3,w1+1,oW)
+   local out = input:narrow(2,h1,oH):narrow(3,w1,oW)
    -- do hflip with probability 0.5
    --if torch.uniform() > 0.5 then out:flop() end
    dst:resizeAs(out):copy(out)
